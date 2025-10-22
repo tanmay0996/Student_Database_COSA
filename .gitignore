@@ -36,3 +36,4 @@ backend/.env
 
 node_modules
 .history
+backfillParticipantsCount.js

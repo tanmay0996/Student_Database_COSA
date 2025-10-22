@@ -7,10 +7,39 @@ import {
   CheckCircle,
   XCircle,
 } from "lucide-react";
+import { toast, ToastContainer } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
 import { AdminContext } from "../../context/AdminContext";
 import RoomRequestModal from "./RoomRequest";
 import ManageRequestsModal from "./ManageRoomRequest";
 import api from "../../utils/api";
+
+// ✅ Confirmation modal for registration with blur background
+const ConfirmRegisterModal = ({ event, onConfirm, onCancel }) => (
+  <div className="fixed inset-0 backdrop-blur-sm bg-white/30 flex items-center justify-center z-50">
+    <div className="bg-white rounded-lg shadow-lg w-96 p-6 text-center">
+      <h3 className="text-lg font-semibold mb-3">Confirm Registration</h3>
+      <p className="text-gray-700 mb-6">
+        Are you sure you want to register for <b>{event.title}</b>?
+      </p>
+      <div className="flex justify-center gap-4">
+        <button
+          onClick={onCancel}
+          className="px-4 py-2 rounded-md border border-gray-300 hover:bg-gray-100"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={() => onConfirm(event._id)}
+          className="px-4 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700"
+        >
+          Confirm
+        </button>
+      </div>
+    </div>
+  </div>
+);
+
 const EventList = () => {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -18,34 +47,32 @@ const EventList = () => {
   const { isUserLoggedIn } = useContext(AdminContext);
   const username = isUserLoggedIn?.username || "";
   const userRole = isUserLoggedIn?.role || "STUDENT";
+  const userId = isUserLoggedIn?._id;
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedEventId, setSelectedEventId] = useState(null);
   const [selectedEventForManage, setSelectedEventForManage] = useState(null);
 
+  // ✅ Registration states
+  const [selectedEventForRegister, setSelectedEventForRegister] =
+    useState(null);
+  const [registering, setRegistering] = useState(false);
+
+  // Fetch events based on user role
   useEffect(() => {
     const fetchEvents = async () => {
-      if (!userRole) {
-        return;
-      }
       try {
         setLoading(true);
-        setError(null);
-
         let url = `/api/events/by-role/${userRole}`;
         if (userRole === "CLUB_COORDINATOR" && username) {
           url += `?username=${encodeURIComponent(username)}`;
-        } else if (userRole === "CLUB_COORDINATOR" && !username) {
-          throw new Error("Username is missing for Club Coordinator.");
         }
-
         const response = await api.get(url);
         setEvents(response.data);
       } catch (err) {
         const message =
           err.response?.data?.message || "Failed to fetch events.";
         setError(message);
-        console.error("Fetch error:", message);
       } finally {
         setLoading(false);
       }
@@ -79,20 +106,52 @@ const EventList = () => {
       ),
     );
   };
-  const formatDate = (date) => {
-    return new Date(date).toLocaleDateString("en-US", {
+
+  // ✅ Handle registration confirm with react-toastify
+  const handleConfirmRegister = async (eventId) => {
+    setRegistering(true);
+    try {
+      const res = await api.post(`/api/events/${eventId}/register`);
+      setEvents((prev) =>
+        prev.map((ev) =>
+          ev._id === eventId
+            ? { ...ev, participants: [...(ev.participants || []), userId] }
+            : ev,
+        ),
+      );
+      toast.success(res.data?.message || "Successfully registered!", {
+        position: "top-right",
+        autoClose: 3000,
+      });
+    } catch (err) {
+      const msg = err.response?.data?.message || "Registration failed.";
+      toast.error(msg, {
+        position: "top-right",
+        autoClose: 3000,
+      });
+    } finally {
+      setRegistering(false);
+      setSelectedEventForRegister(null);
+    }
+  };
+
+  // ✅ Check if already registered
+  const isRegistered = (event) =>
+    Array.isArray(event.participants) &&
+    event.participants.some((p) => String(p._id || p) === String(userId));
+
+  const formatDate = (date) =>
+    new Date(date).toLocaleDateString("en-US", {
       year: "numeric",
       month: "short",
       day: "numeric",
     });
-  };
 
-  const formatTime = (date) => {
-    return new Date(date).toLocaleTimeString("en-US", {
+  const formatTime = (date) =>
+    new Date(date).toLocaleTimeString("en-US", {
       hour: "2-digit",
       minute: "2-digit",
     });
-  };
 
   const getStatusColor = (status) => {
     const colors = {
@@ -115,29 +174,40 @@ const EventList = () => {
     }
   };
 
-  const canRequestRoom = () => {
-    return [
+  const canRequestRoom = () =>
+    [
       "CLUB_COORDINATOR",
       "GENSEC_SCITECH",
       "GENSEC_ACADEMIC",
       "GENSEC_CULTURAL",
       "GENSEC_SPORTS",
     ].includes(userRole);
-  };
 
   const renderActionButtons = (event) => {
     switch (userRole) {
       case "STUDENT":
+        const alreadyRegistered = isRegistered(event);
         return (
           <div className="flex gap-2">
-            <button className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors">
-              Register
+            <button
+              disabled={alreadyRegistered || registering}
+              onClick={() =>
+                !alreadyRegistered && setSelectedEventForRegister(event)
+              }
+              className={`px-4 py-2 rounded-md transition-colors ${
+                alreadyRegistered
+                  ? "bg-gray-300 text-gray-600 cursor-not-allowed"
+                  : "bg-blue-600 text-white hover:bg-blue-700"
+              }`}
+            >
+              {alreadyRegistered ? "Registered" : "Register"}
             </button>
             <button className="px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 transition-colors">
               View Details
             </button>
           </div>
         );
+
       case "CLUB_COORDINATOR":
       case "GENSEC_SCITECH":
       case "GENSEC_ACADEMIC":
@@ -151,13 +221,14 @@ const EventList = () => {
             {canRequestRoom() && (
               <button
                 className="px-4 py-2 bg-teal-600 text-white rounded-md hover:bg-teal-700 transition-colors"
-                onClick={() => handleOpenModal(event._id)} // 4. Connect button to open the modal
+                onClick={() => handleOpenModal(event._id)}
               >
                 Request Room
               </button>
             )}
           </div>
         );
+
       case "PRESIDENT":
         return (
           <div className="flex gap-2">
@@ -247,13 +318,14 @@ const EventList = () => {
 
   return (
     <>
+      {/* ✅ ToastContainer for react-toastify */}
+      <ToastContainer />
+
       <div className="max-w-7xl mx-auto p-6">
-        {/* Header */}
         <div className="mb-4">
           <p>Events at IIT Bhilai</p>
         </div>
 
-        {/* Events Grid */}
         {events.length === 0 ? (
           <div className="text-center py-12">
             <Calendar className="w-16 h-16 text-gray-300 mx-auto mb-4" />
@@ -277,7 +349,9 @@ const EventList = () => {
                       {event.title}
                     </h3>
                     <span
-                      className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(event.status)}`}
+                      className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(
+                        event.status,
+                      )}`}
                     >
                       {event.status}
                     </span>
@@ -320,7 +394,7 @@ const EventList = () => {
         )}
       </div>
 
-      {/*Conditionally render the modal */}
+      {/* Modals */}
       {isModalOpen && (
         <RoomRequestModal
           eventId={selectedEventId}
@@ -328,6 +402,7 @@ const EventList = () => {
           onSubmit={handleRoomRequestSubmit}
         />
       )}
+
       {selectedEventForManage && (
         <ManageRequestsModal
           eventId={selectedEventForManage._id}
@@ -335,6 +410,15 @@ const EventList = () => {
           requests={selectedEventForManage.room_requests}
           onClose={() => setSelectedEventForManage(null)}
           onUpdateRequest={handleManageUpdate}
+        />
+      )}
+
+      {/* ✅ Register confirmation modal with blur background */}
+      {selectedEventForRegister && (
+        <ConfirmRegisterModal
+          event={selectedEventForRegister}
+          onConfirm={handleConfirmRegister}
+          onCancel={() => setSelectedEventForRegister(null)}
         />
       )}
     </>
