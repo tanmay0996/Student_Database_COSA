@@ -1,62 +1,43 @@
-import React, { useState, useContext } from "react";
+import React, { useState, useEffect } from "react";
+import { NavbarConfig } from "../../config/navbarConfig";
+import { DashboardComponents } from "../../config/dashboardComponents";
+import api from "../../utils/api";
+import LeftColumn from "./QuickStats";
 import { AdminContext } from "../../context/AdminContext";
-import Sidebar from "./Sidebar";
-import { dashboardComponents } from "../../config/dashboardComponents";
+import Layout from "../common/Layout";
+import { SidebarProvider, useSidebar } from "../../hooks/useSidebar";
+import Home from "./Home";
 
-const Dashboard = () => {
-  const { isUserLoggedIn } = useContext(AdminContext);
-  const [selected, setSelected] = useState("dashboard"); // default selected
+function Content() {
+  const { selected: selectedRoute } = useSidebar();
+  const ActiveComponent =
+    DashboardComponents[selectedRoute] || (() => <div>Home</div>);
+  return <ActiveComponent />;
+}
+// Main component that provides the sidebar context
+export default function RoleBasedDashboard() {
+  const { isUserLoggedIn } = React.useContext(AdminContext);
 
-  const SelectedComponent =
-    dashboardComponents[selected] || (() => <div>Select something</div>);
-
-  return (
-    <div className="flex h-screen overflow-hidden bg-[#FDFAE2]">
-      {/* Sidebar */}
-      <Sidebar selected={selected} setSelected={setSelected} />
-
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col p-4 overflow-hidden">
-        <h2 className="text-[36px] font-semibold mb-4 font-poppins" >
-          Welcome to {isUserLoggedIn?.role
-  ?.toLowerCase()
-  ?.replace(/_/g, " ")
-  ?.replace(/^\w/, c => c.toUpperCase())} Dashboard
-        </h2>
-
-        <div className="flex flex-1 gap-4 overflow-hidden">
-          {/* Left Section */}
-          <div className="flex-1 flex flex-col gap-4 overflow-hidden">
-            <div className="bg-gray-100 rounded-md shadow flex-1 overflow-auto">
-              <SelectedComponent />
-            </div>
-
-            {/* Only show small boxes if dashboard is selected */}
-            {selected === "dashboard" && (
-              <div className="flex gap-4 h-1/3">
-                <div className="bg-gray-100 rounded-md shadow p-4 flex-1">
-                  Small box 1
-                </div>
-                <div className="bg-gray-100 rounded-md shadow p-4 flex-1">
-                  Small box 2
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Right Column */}
-          <div className="w-1/4 flex flex-col gap-4 overflow-auto">
-            <div className="bg-gray-100 rounded-md shadow p-4 flex-1">
-              Right box 1
-            </div>
-            <div className="bg-gray-100 rounded-md shadow p-4 flex-1">
-              Right box 2
-            </div>
-          </div>
+  if (!isUserLoggedIn) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <h2 className="text-2xl font-semibold mb-4">
+            Loading Dashboard.....
+          </h2>
         </div>
       </div>
-    </div>
-  );
-};
+    );
+  }
 
-export default Dashboard;
+  const role = isUserLoggedIn?.role || "STUDENT";
+  const navItems = NavbarConfig[role] || [];
+
+  return (
+    <SidebarProvider role={role} navItems={navItems}>
+      <Content />
+      {/* <ActiveComponent /> */}
+      {/* <DashboardContent /> */}
+    </SidebarProvider>
+  );
+}

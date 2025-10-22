@@ -16,8 +16,13 @@ const skillsRoutes = require("./routes/skillsRoutes.js");
 const achievementsRoutes = require("./routes/achievements.js");
 const positionsRoutes = require("./routes/positionRoutes.js");
 const organizationalUnitRoutes = require("./routes/orgUnit.js");
-
+const dashboardRoutes = require("./routes/dashboard.js");
 const app = express();
+
+if (process.env.NODE_ENV === "production") {
+  app.set("trust proxy", 1);
+}
+
 app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
 
 // Connect to MongoDB
@@ -30,6 +35,10 @@ app.use(
     secret: "keyboard cat",
     resave: false,
     saveUninitialized: false,
+    cookie: {
+    secure: process.env.NODE_ENV === "production",          // HTTPS only in prod
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",  // cross-origin in prod
+  },
   }),
 );
 
@@ -51,6 +60,7 @@ app.use("/api/skills", skillsRoutes);
 app.use("/api/achievements", achievementsRoutes);
 app.use("/api/positions", positionsRoutes);
 app.use("/api/orgUnit", organizationalUnitRoutes);
+app.use("/api/dashboard", dashboardRoutes);
 
 // Start the server
 app.listen(process.env.PORT || 8000, () => {

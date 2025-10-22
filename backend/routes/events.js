@@ -27,6 +27,23 @@ router.post(
         registration,
         budget,
       } = req.body;
+router.post(
+  "/create",
+  isAuthenticated,
+  authorizeRole(ROLE_GROUPS.ADMIN),
+  async (req, res) => {
+    try {
+      const {
+        title,
+        description,
+        category,
+        type,
+        organizing_unit_id,
+        organizers,
+        schedule,
+        registration,
+        budget,
+      } = req.body;
 
       // Validate organizing unit
       const orgUnit = await OrganizationalUnit.findById(organizing_unit_id);
@@ -35,7 +52,23 @@ router.post(
           .status(400)
           .json({ message: "Invalid organizational unit." });
       }
+      // Validate organizing unit
+      const orgUnit = await OrganizationalUnit.findById(organizing_unit_id);
+      if (!orgUnit) {
+        return res
+          .status(400)
+          .json({ message: "Invalid organizational unit." });
+      }
 
+      // Optional: Validate organizer IDs
+      if (organizers && organizers.length > 0) {
+        const validUsers = await User.find({ _id: { $in: organizers } });
+        if (validUsers.length !== organizers.length) {
+          return res
+            .status(400)
+            .json({ message: "One or more organizers are invalid." });
+        }
+      }
       // Optional: Validate organizer IDs
       if (organizers && organizers.length > 0) {
         const validUsers = await User.find({ _id: { $in: organizers } });
@@ -58,7 +91,30 @@ router.post(
         registration,
         budget,
       });
+      const newEvent = new Event({
+        event_id: uuidv4(),
+        title,
+        description,
+        category,
+        type,
+        organizing_unit_id,
+        organizers,
+        schedule,
+        registration,
+        budget,
+      });
 
+      await newEvent.save();
+      res
+        .status(201)
+        .json({ message: "Event created successfully", event: newEvent });
+      console.log("Event created:", newEvent);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ message: "Server error while creating event." });
+    }
+  },
+);
       await newEvent.save();
       res
         .status(201)
@@ -84,7 +140,45 @@ router.get("/events", async (req, res) => {
 
 router.get("/units", isAuthenticated, async (req, res) => {
   try {
-    const units = await OrganizationalUnit.find();
+    const role = (req.user && req.user.role) || "";
+    const userEmail = String(
+      (req.user &&
+        (req.user.username ||
+          (req.user.personal_info && req.user.personal_info.email))) ||
+        "",
+    )
+      .trim()
+      .toLowerCase();
+
+    const categoryForRole = {
+      [ROLES.GENSEC_SCITECH]: "scitech",
+      [ROLES.GENSEC_ACADEMIC]: "academic",
+      [ROLES.GENSEC_CULTURAL]: "cultural",
+      [ROLES.GENSEC_SPORTS]: "sports",
+    };
+
+    let units = [];
+
+    if (role === ROLES.PRESIDENT) {
+      // President sees all units
+      units = await OrganizationalUnit.find();
+    } else if (categoryForRole[role]) {
+      // GenSecs see units by category
+      units = await OrganizationalUnit.find({
+        category: categoryForRole[role],
+      });
+    } else if (role === ROLES.CLUB_COORDINATOR) {
+      // Club Coordinator sees only their own unit (matched by contact email)
+      const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const coordUnit = await OrganizationalUnit.findOne({
+        "contact_info.email": new RegExp(`^${escapeRegex(userEmail)}$`, "i"),
+      });
+      units = coordUnit ? [coordUnit] : [];
+    } else {
+      // Default: return all units (keeps previous behavior for non-admins if needed)
+      units = await OrganizationalUnit.find();
+    }
+
     res.json(units);
   } catch (err) {
     console.error(err);
@@ -93,12 +187,132 @@ router.get("/units", isAuthenticated, async (req, res) => {
 });
 
 router.get("/users", isAuthenticated, async (req, res) => {
+router.get("/users", isAuthenticated, async (req, res) => {
   try {
     const users = await User.find();
     res.json(users);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Error fetching users." });
+  }
+});
+
+// POST /:eventId/register
+router.post("/:eventId/register", isAuthenticated, async (req, res) => {
+  try {
+    const { eventId } = req.params;
+    const userId = req.user && req.user._id;
+    if (!userId) {
+      return res.status(401).json({ message: "Authentication required." });
+    }
+
+    // ✅ Validate eventId format
+    if (!mongoose.Types.ObjectId.isValid(eventId)) {
+      return res.status(400).json({ message: "Invalid event ID." });
+    }
+
+    const now = new Date();
+
+    // ✅ Build atomic filter
+    const filter = {
+      _id: mongoose.Types.ObjectId(eventId),
+      participants: { $ne: mongoose.Types.ObjectId(userId) },
+      $and: [
+        {
+          $or: [
+            { "registration.start": { $exists: false } },
+            { "registration.start": { $lte: now } },
+          ],
+        },
+        {
+          $or: [
+            { "registration.end": { $exists: false } },
+            { "registration.end": { $gte: now } },
+          ],
+        },
+        {
+          $or: [
+            { "registration.max_participants": { $exists: false } },
+            { $expr: { $lt: ["$participants_count", "$registration.max_participants"] } },
+          ],
+        },
+      ],
+    };
+
+    // ✅ Safe atomic update
+    const update = {
+      $addToSet: { participants: mongoose.Types.ObjectId(userId) },
+      $inc: { participants_count: 1 },
+    };
+
+    // ✅ Perform atomic update
+    const updatedEvent = await Event.findOneAndUpdate(filter, update, {
+      new: true,
+    })
+      .select("title participants_count participants")
+      .lean();
+
+    if (updatedEvent) {
+      return res.status(200).json({
+        message: "Successfully registered!",
+        eventId,
+        title: updatedEvent.title,
+        participants_count: updatedEvent.participants_count || 0,
+      });
+    }
+
+    // --- No update; diagnose reason ---
+    const fresh = await Event.findById(eventId)
+      .select("registration participants participants_count")
+      .lean();
+
+    if (!fresh) {
+      return res.status(404).json({ message: "Event not found." });
+    }
+
+    if (fresh.registration && fresh.registration.required === false) {
+      return res
+        .status(400)
+        .json({ message: "Registration is not required for this event." });
+    }
+
+    if (
+      Array.isArray(fresh.participants) &&
+      fresh.participants.some(function (id) {
+        return String(id) === String(userId);
+      })
+    ) {
+      return res
+        .status(409)
+        .json({ message: "You are already registered for this event." });
+    }
+
+    if (fresh.registration && fresh.registration.start && fresh.registration.end) {
+      const s = new Date(fresh.registration.start);
+      const e = new Date(fresh.registration.end);
+      if (!(s <= now && now <= e)) {
+        return res.status(400).json({ message: "Registration is closed." });
+      }
+    }
+
+    if (
+      fresh.registration &&
+      typeof fresh.registration.max_participants === "number" &&
+      Number.isFinite(fresh.registration.max_participants) &&
+      (fresh.participants_count || 0) >= fresh.registration.max_participants
+    ) {
+      return res.status(409).json({ message: "Registration is full." });
+    }
+
+    return res.status(400).json({ message: "Unable to register. Please try again." });
+  } catch (err) {
+    console.error("Error during registration:", err);
+    if (err.name === "CastError") {
+      return res.status(400).json({ message: "Invalid event ID format." });
+    }
+    return res
+      .status(500)
+      .json({ message: "Server error while registering for event." });
   }
 });
 
@@ -331,7 +545,30 @@ router.post(
           .json({ message: "Date, time, and room are required fields." });
       }
       const event = await Event.findById(eventId);
+router.post(
+  "/:eventId/room-requests",
+  isAuthenticated,
+  authorizeRole([...ROLE_GROUPS.GENSECS, ...ROLE_GROUPS.COORDINATORS]),
+  async (req, res) => {
+    try {
+      const { eventId } = req.params;
+      const { date, time, room, description } = req.body;
+      if (!date || !time || !room) {
+        return res
+          .status(400)
+          .json({ message: "Date, time, and room are required fields." });
+      }
+      const event = await Event.findById(eventId);
 
+      if (!event) {
+        return res.status(404).json({ message: "Event not found." });
+      }
+      const newRoomRequest = {
+        date,
+        time,
+        room,
+        description: description || "",
+      };
       if (!event) {
         return res.status(404).json({ message: "Event not found." });
       }
@@ -356,7 +593,30 @@ router.post(
     }
   },
 );
+      event.room_requests.push(newRoomRequest);
+      const updatedEvent = await event.save();
+      res.status(201).json(updatedEvent);
+    } catch (error) {
+      console.error("Error adding room request:", error);
+      if (error.name === "CastError") {
+        return res.status(400).json({ message: "Invalid event ID format." });
+      }
+      res
+        .status(500)
+        .json({ message: "Server error while adding room request." });
+    }
+  },
+);
 
+router.patch(
+  "/room-requests/:requestId/status",
+  isAuthenticated,
+  authorizeRole("PRESIDENT"),
+  async (req, res) => {
+    const { requestId } = req.params;
+    const { status, reviewed_by } = req.body;
+    if (!status || !["Approved", "Rejected"].includes(status)) {
+      return res.status(400).json({
 router.patch(
   "/room-requests/:requestId/status",
   isAuthenticated,
@@ -368,6 +628,20 @@ router.patch(
       return res.status(400).json({
         message: 'A valid status ("Approved" or "Rejected") is required.',
       });
+    }
+    try {
+      const event = await Event.findOne({ "room_requests._id": requestId });
+      if (!event) {
+        return res
+          .status(404)
+          .json({ message: "Request or associated event not found." });
+      }
+      const request = event.room_requests.id(requestId);
+      if (request) {
+        request.status = status;
+        request.requested_at = new Date();
+        request.reviewed_by = reviewed_by;
+      }
     }
     try {
       const event = await Event.findOne({ "room_requests._id": requestId });
